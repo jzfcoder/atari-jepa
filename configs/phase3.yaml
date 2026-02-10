@@ -1,0 +1,41 @@
+# Phase 3: Encoder-swap experiments
+# Train PPO with frozen encoders, evaluate under perturbations
+
+# Environment
+env_id: "ALE/Breakout-v5"
+
+# PPO training (same as baseline)
+total_timesteps: 10_000_000
+learning_rate: 2.5e-4
+num_envs: 8
+num_steps: 128
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 4
+update_epochs: 4
+clip_coef: 0.1
+ent_coef: 0.01
+vf_coef: 0.5
+max_grad_norm: 0.5
+norm_adv: true
+capture_video: false
+save_interval: 500_000
+
+# Experiment settings
+seeds: [1, 2, 3]
+save_dir: "results/v0/phase3"
+
+# Encoder paths (set after Phase 2 training)
+jepa_encoder_path: "results/v0/jepa/encoder_final.pt"
+ae_encoder_path: "results/v0/autoencoder/encoder_final.pt"
+baseline_model_path: "results/v0/ppo_Breakout-v5_42_1770766846/final_model.pt"
+
+# Evaluation
+eval_episodes: 50
+eval_seeds: [42, 123, 456]
+perturbation_levels:
+  - "clean"
+  - "color_jitter"
+  - "noise"
+  - "mild"
+  - "hard"

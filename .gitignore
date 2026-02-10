@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Model checkpoints and large data
+*.pt
+*.npz
+events.out.tfevents.*
+
+# TensorBoard
+runs/
+
+# Internal planning docs (kept local)
+baseline.txt
+V0_SPEC.md
+V1_PLAN.md

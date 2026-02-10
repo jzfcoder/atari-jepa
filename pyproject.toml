@@ -1,0 +1,25 @@
+[project]
+name = "atari"
+version = "0.1.0"
+description = "JEPA Encoders for Visually Robust Game Agents"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "gymnasium[atari,accept-rom-license]",
+    "torch",
+    "numpy",
+    "Pillow",
+    "tensorboard",
+    "pyyaml",
+    "opencv-python",
+    "matplotlib",
+    "scikit-learn",
+    "setuptools<75",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["env", "agents"]
