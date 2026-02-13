@@ -1,0 +1,15 @@
+Visual Perturbation Robustness Results
+Model: results/v0/ppo_Breakout-v5_42_1770766846/final_model.pt
+Env: ALE/Breakout-v5
+Episodes per seed: 50
+Seeds: [42, 123, 456]
+
+---------------------------------------------------------------
+Condition             | Mean Reward |    Std | Robustness Ratio
+---------------------------------------------------------------
+Clean                 |         7.4 |    5.2 |            1.000
+Color Jitter          |         7.3 |    4.3 |            0.983
+Gaussian Noise        |         5.4 |    3.4 |            0.723
+Both (mild)           |         4.0 |    3.5 |            0.537
+Both (hard)           |         2.0 |    1.6 |            0.269
+---------------------------------------------------------------
