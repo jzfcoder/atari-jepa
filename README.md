@@ -73,7 +73,7 @@ The experiment runs in 4 phases. Each phase builds on the previous one.
 uv run python scripts/train_baseline.py
 
 # Evaluate under visual perturbations
-uv run python scripts/measure_gap.py --model results/v0/ppo_*/final_model.pt
+uv run python scripts/utils/measure_gap.py --model results/v0/ppo_*/final_model.pt
 ```
 
 ### Phase 2: Self-supervised encoder pretraining
@@ -89,7 +89,7 @@ uv run python scripts/train_jepa.py
 uv run python scripts/train_autoencoder.py
 
 # Verify encoder quality (PCA, nearest neighbors, linear probe)
-uv run python scripts/verify_encoders.py \
+uv run python scripts/utils/verify_encoders.py \
     --frames results/v0/frames.npz \
     --jepa-encoder results/v0/jepa/encoder_final.pt \
     --ae-encoder results/v0/autoencoder/encoder_final.pt
@@ -108,10 +108,10 @@ uv run python scripts/run_phase3.py --skip-training
 ### Phase 4: Analysis and visualization
 
 ```bash
-uv run python scripts/plot_robustness.py
-uv run python scripts/plot_learning_curves.py
-uv run python scripts/visualize_saliency.py
-uv run python scripts/generate_report.py
+uv run python scripts/utils/plot_robustness.py
+uv run python scripts/utils/plot_learning_curves.py
+uv run python scripts/utils/visualize_saliency.py
+uv run python scripts/utils/generate_report.py
 ```
 
 Outputs are saved to `results/v0/phase4/` including a full
