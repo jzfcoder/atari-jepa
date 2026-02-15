@@ -1,0 +1,57 @@
+# V1: Unfrozen encoder experiments
+# Can fine-tuning pretrained encoders close the clean-performance gap
+# while preserving robustness?
+
+# Environment
+env_id: "ALE/Breakout-v5"
+
+# PPO training (same hyperparameters as V0)
+total_timesteps: 10_000_000
+learning_rate: 2.5e-4
+num_envs: 8
+num_steps: 128
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 4
+update_epochs: 4
+clip_coef: 0.1
+ent_coef: 0.01
+vf_coef: 0.5
+max_grad_norm: 0.5
+norm_adv: true
+capture_video: false
+save_interval: 500_000
+
+# Fine-tuning
+encoder_lr_scale: 0.1
+
+# Experiment settings
+seeds: [1, 2, 3]
+save_dir: "results/v1"
+
+# Pretrained encoder paths (from V0 Phase 2)
+jepa_encoder_path: "results/v0/jepa/encoder_final.pt"
+ae_encoder_path: "results/v0/autoencoder/encoder_final.pt"
+
+# Conditions to run
+# - stock_cnn:    Nature-CNN, random init, end-to-end (control)
+# - jepa_frozen:  ViT-Tiny, JEPA pretrained, frozen (V0 repro)
+# - jepa_finetune: ViT-Tiny, JEPA pretrained, end-to-end with encoder_lr_scale
+# - ae_finetune:  ViT-Tiny, AE pretrained, end-to-end with encoder_lr_scale
+# - vit_scratch:  ViT-Tiny, random init, end-to-end (architecture control)
+conditions:
+  - stock_cnn
+  - jepa_frozen
+  - jepa_finetune
+  - ae_finetune
+  - vit_scratch
+
+# Evaluation
+eval_episodes: 50
+eval_seeds: [42, 123, 456]
+perturbation_levels:
+  - "clean"
+  - "color_jitter"
+  - "noise"
+  - "mild"
+  - "hard"

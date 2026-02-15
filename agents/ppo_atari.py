@@ -1,8 +1,9 @@
 """CleanRL-style PPO for Atari, adapted for JEPA encoder-swap experiments.
 
-This is the V0 baseline: a standard PPO agent with a CNN encoder trained
-end-to-end. The encoder is structured as a separate nn.Module so it can be
-replaced with a frozen JEPA or autoencoder in later phases.
+Supports three encoder modes:
+  - Stock CNN (default): standard Nature-CNN trained end-to-end.
+  - Frozen encoder: pretrained encoder (JEPA/AE) is frozen, only heads train.
+  - Fine-tune encoder: pretrained encoder trains end-to-end with a lower LR.
 
 Reference: https://github.com/vwxyzjn/cleanrl/blob/master/cleanrl/ppo_atari.py
 """
@@ -45,6 +46,8 @@ DEFAULT_CONFIG = {
     "run_name": None,
     "save_dir": "results/v0",
     "save_interval": 500_000,
+    "freeze_encoder": True,
+    "encoder_lr_scale": 0.1,
 }
 
 
@@ -198,8 +201,9 @@ def train(config=None, encoder=None):
 
     Args:
         config: Training configuration dict. Missing keys filled from DEFAULT_CONFIG.
-        encoder: Optional pre-trained encoder (e.g. VisionTransformer). If provided,
-                 encoder weights are frozen and only policy+value heads are trained.
+            Set freeze_encoder=False and encoder_lr_scale to fine-tune an encoder.
+        encoder: Optional pre-trained encoder (e.g. VisionTransformer). Behavior
+            depends on config["freeze_encoder"] (default True = frozen, heads only).
     """
     cfg = {**DEFAULT_CONFIG, **(config or {})}
 
@@ -236,16 +240,27 @@ def train(config=None, encoder=None):
     num_actions = envs.single_action_space.n
 
     # Agent and optimizer
+    freeze_encoder = encoder is not None and cfg["freeze_encoder"]
     if encoder is not None:
-        for p in encoder.parameters():
-            p.requires_grad = False
-        encoder.eval()
+        if freeze_encoder:
+            for p in encoder.parameters():
+                p.requires_grad = False
+            encoder.eval()
         agent = Agent(num_actions, encoder=encoder).to(device)
-        trainable_params = list(agent.actor.parameters()) + list(agent.critic.parameters())
-        optimizer = optim.Adam(trainable_params, lr=cfg["learning_rate"], eps=1e-5)
-        num_frozen = sum(p.numel() for p in encoder.parameters())
-        num_trainable = sum(p.numel() for p in trainable_params)
-        print(f"Frozen encoder: {num_frozen:,} params | Trainable (heads): {num_trainable:,} params")
+        head_params = list(agent.actor.parameters()) + list(agent.critic.parameters())
+        if freeze_encoder:
+            optimizer = optim.Adam(head_params, lr=cfg["learning_rate"], eps=1e-5)
+        else:
+            # Fine-tune: lower LR on encoder to avoid catastrophic forgetting
+            optimizer = optim.Adam([
+                {"params": list(agent.encoder.parameters()),
+                 "lr": cfg["learning_rate"] * cfg["encoder_lr_scale"]},
+                {"params": head_params, "lr": cfg["learning_rate"]},
+            ], eps=1e-5)
+        num_encoder = sum(p.numel() for p in encoder.parameters())
+        num_heads = sum(p.numel() for p in head_params)
+        mode = "frozen" if freeze_encoder else f"fine-tune (encoder_lr_scale={cfg['encoder_lr_scale']})"
+        print(f"Encoder: {num_encoder:,} params ({mode}) | Heads: {num_heads:,} params")
         # Save encoder architecture info so _load_checkpoint can reconstruct it
         cfg["encoder_type"] = "vit"
         cfg["encoder_in_channels"] = encoder.patch_embed.proj.in_channels
@@ -259,7 +274,6 @@ def train(config=None, encoder=None):
         optimizer = optim.Adam(agent.parameters(), lr=cfg["learning_rate"], eps=1e-5)
 
     # Rollout storage
-    freeze_encoder = encoder is not None
     obs_buf = torch.zeros(
         (cfg["num_steps"], cfg["num_envs"]) + envs.single_observation_space.shape,
         dtype=torch.uint8,
@@ -282,13 +296,13 @@ def train(config=None, encoder=None):
     next_obs, _ = envs.reset(seed=seed)
     next_obs = torch.as_tensor(next_obs)
     next_done = torch.zeros(cfg["num_envs"])
+    initial_lrs = [pg["lr"] for pg in optimizer.param_groups]
 
     for update in range(1, num_updates + 1):
         # ---- Learning rate annealing (linear) ----
         frac = 1.0 - (update - 1.0) / num_updates
-        lr_now = frac * cfg["learning_rate"]
-        for pg in optimizer.param_groups:
-            pg["lr"] = lr_now
+        for pg, init_lr in zip(optimizer.param_groups, initial_lrs):
+            pg["lr"] = frac * init_lr
 
         # ---- Rollout phase ----
         for step in range(cfg["num_steps"]):
@@ -436,6 +450,11 @@ def train(config=None, encoder=None):
 
                 optimizer.zero_grad()
                 loss.backward()
+                if not freeze_encoder and encoder is not None:
+                    # Track pre-clip encoder grad norm (last minibatch value logged below)
+                    _enc_grad_norm = nn.utils.clip_grad_norm_(
+                        agent.encoder.parameters(), float("inf")
+                    )
                 nn.utils.clip_grad_norm_(agent.parameters(), cfg["max_grad_norm"])
                 optimizer.step()
 
@@ -446,7 +465,7 @@ def train(config=None, encoder=None):
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         sps = int(global_step / (time.time() - start_time))
-        writer.add_scalar("charts/learning_rate", lr_now, global_step)
+        writer.add_scalar("charts/learning_rate", optimizer.param_groups[-1]["lr"], global_step)
         writer.add_scalar("charts/SPS", sps, global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
@@ -454,6 +473,9 @@ def train(config=None, encoder=None):
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        if not freeze_encoder and encoder is not None:
+            writer.add_scalar("encoder/grad_norm", _enc_grad_norm.item(), global_step)
+            writer.add_scalar("charts/encoder_lr", optimizer.param_groups[0]["lr"], global_step)
 
         if update % 10 == 0:
             print(
