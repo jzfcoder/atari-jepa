@@ -9,12 +9,15 @@ Usage:
     uv run python scripts/run_v1.py --config configs/v1.yaml
     uv run python scripts/run_v1.py --skip-training      # eval only
     uv run python scripts/run_v1.py --conditions jepa_finetune vit_scratch
+    uv run python scripts/run_v1.py --parallel 4          # run 4 jobs at once
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -79,7 +82,6 @@ def build_encoder(condition: str, cfg: dict, device: str):
 
     elif condition == "vit_scratch":
         # Random-init ViT with same architecture as the pretrained encoders.
-        # Read arch params from the JEPA config if available.
         enc = VisionTransformer(
             in_channels=4,
             patch_size=12,
@@ -120,6 +122,87 @@ def train_condition(
     print(f"{'='*60}")
 
     return train(config=ppo_cfg, encoder=encoder)
+
+
+def run_worker(condition: str, seed: int, cfg: dict, device: str) -> str:
+    """Train a single condition+seed (used in worker mode)."""
+    encoder, ppo_overrides = build_encoder(condition, cfg, device)
+    return train_condition(condition, encoder, seed, cfg, ppo_overrides)
+
+
+def run_parallel_training(
+    conditions: list[str],
+    seeds: list[int],
+    cfg: dict,
+    config_path: str,
+    parallel: int,
+    device: str | None,
+) -> None:
+    """Launch training jobs as subprocesses, up to `parallel` at a time."""
+    save_dir = Path(cfg["save_dir"])
+
+    # Build job list, skipping any that already have final_model.pt
+    jobs: list[tuple[str, int]] = []
+    for condition in conditions:
+        for seed in seeds:
+            model_file = save_dir / condition / f"{condition}_seed{seed}" / "final_model.pt"
+            if model_file.exists():
+                print(f"  Skipping {condition} seed={seed} (already complete)")
+            else:
+                jobs.append((condition, seed))
+
+    if not jobs:
+        print("All training runs already complete.")
+        return
+
+    print(f"\n{len(jobs)} training jobs to run, {parallel} at a time\n")
+
+    running: list[tuple[subprocess.Popen, str, int, Path]] = []
+    completed = 0
+    failed = 0
+
+    while jobs or running:
+        # Launch new jobs up to parallel limit
+        while jobs and len(running) < parallel:
+            condition, seed = jobs.pop(0)
+            log_dir = save_dir / condition / f"{condition}_seed{seed}"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / "train.log"
+
+            cmd = [
+                sys.executable, __file__,
+                "--config", config_path,
+                "--worker", condition, str(seed),
+            ]
+            if device:
+                cmd.extend(["--device", device])
+
+            display = DISPLAY_NAMES.get(condition, condition)
+            print(f"  Launching: {display} seed={seed} (log: {log_path})")
+            log_f = open(log_path, "w")
+            proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT)
+            running.append((proc, condition, seed, log_path))
+
+        # Check for completed processes
+        for entry in running[:]:
+            proc, condition, seed, log_path = entry
+            ret = proc.poll()
+            if ret is not None:
+                running.remove(entry)
+                display = DISPLAY_NAMES.get(condition, condition)
+                if ret == 0:
+                    completed += 1
+                    print(f"  Done: {display} seed={seed} ({completed} complete, {len(jobs)} queued)")
+                else:
+                    failed += 1
+                    print(f"  FAILED: {display} seed={seed} (exit code {ret}, see {log_path})")
+
+        if running:
+            time.sleep(5)
+
+    print(f"\nParallel training done: {completed} succeeded, {failed} failed")
+    if failed:
+        print("Check train.log files for failed runs.")
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +303,14 @@ def main() -> None:
         choices=ALL_CONDITIONS,
         help="Run only these conditions (default: all from config)",
     )
+    parser.add_argument(
+        "--parallel", type=int, default=1,
+        help="Number of training jobs to run in parallel (default: 1 = sequential)",
+    )
+    parser.add_argument(
+        "--worker", nargs=2, metavar=("CONDITION", "SEED"),
+        help="Internal: run a single condition+seed (used by --parallel)",
+    )
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
 
@@ -233,6 +324,18 @@ def main() -> None:
         raise FileNotFoundError(f"Config not found: {config_path}")
 
     device = args.device or str(get_device())
+
+    # ------------------------------------------------------------------
+    # Worker mode: train single condition+seed and exit
+    # ------------------------------------------------------------------
+    if args.worker:
+        condition, seed_str = args.worker
+        run_worker(condition, int(seed_str), cfg, device)
+        return
+
+    # ------------------------------------------------------------------
+    # Main orchestrator mode
+    # ------------------------------------------------------------------
     save_dir = Path(cfg["save_dir"])
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -247,25 +350,37 @@ def main() -> None:
     print(f"  Steps:        {cfg['total_timesteps']:,}")
     print(f"  Device:       {device}")
     print(f"  Conditions:   {conditions}")
+    print(f"  Parallel:     {args.parallel}")
     print(f"  LR scale:     {cfg.get('encoder_lr_scale', 0.1)}")
     print("=" * 60)
 
     # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
-    # model_paths: {condition: [path_seed1, path_seed2, ...]}
     model_paths: dict[str, list[str]] = {c: [] for c in conditions}
 
     if not args.skip_training:
         start_time = time.time()
 
-        for condition in conditions:
-            for seed in seeds:
-                # Build a fresh encoder for each seed (important for vit_scratch
-                # so each seed gets independent random init)
-                encoder, ppo_overrides = build_encoder(condition, cfg, device)
-                path = train_condition(condition, encoder, seed, cfg, ppo_overrides)
-                model_paths[condition].append(path)
+        if args.parallel > 1:
+            run_parallel_training(
+                conditions, seeds, cfg,
+                config_path=str(args.config),
+                parallel=args.parallel,
+                device=args.device,
+            )
+            # Discover model paths after parallel training
+            for condition in conditions:
+                for seed in seeds:
+                    model_file = save_dir / condition / f"{condition}_seed{seed}" / "final_model.pt"
+                    if model_file.exists():
+                        model_paths[condition].append(str(model_file))
+        else:
+            for condition in conditions:
+                for seed in seeds:
+                    encoder, ppo_overrides = build_encoder(condition, cfg, device)
+                    path = train_condition(condition, encoder, seed, cfg, ppo_overrides)
+                    model_paths[condition].append(path)
 
         elapsed = time.time() - start_time
         print(f"\nAll training complete in {elapsed/3600:.1f} hours")
