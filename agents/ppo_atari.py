@@ -59,6 +59,7 @@ def make_env(env_id, seed, idx, capture_video=False, run_name=""):
     """Return a thunk that creates a single Atari env with standard wrappers."""
 
     def thunk():
+        import ale_py  # noqa: F401  — register ALE envs in worker subprocess
         if capture_video and idx == 0:
             env = gym.make(env_id, frameskip=1, render_mode="rgb_array")
             env = gym.wrappers.RecordVideo(
@@ -217,7 +218,7 @@ def train(config=None, encoder=None):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = True
 
     device = get_device()
     run_name = cfg["run_name"] or f"ppo_{cfg['env_id'].split('/')[-1]}_{seed}_{int(time.time())}"
@@ -232,7 +233,7 @@ def train(config=None, encoder=None):
     )
 
     # Vectorized environment
-    envs = gym.vector.SyncVectorEnv(
+    envs = gym.vector.AsyncVectorEnv(
         [make_env(cfg["env_id"], seed, i, cfg["capture_video"], run_name)
          for i in range(cfg["num_envs"])]
     )
